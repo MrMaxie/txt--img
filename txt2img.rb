@@ -1,7 +1,195 @@
 # encoding: UTF-8
 
+require 'chunky_png'
+require 'optparse'
+
+module Txt2img
+	def convert!
+	end
+	class << self
+
+		def hex_to_dec x
+			x = x.gsub(/#/,'').scan(/.{2}/).map do |hex| hex.to_i(10) end
+			x.push 255 if x.count == 3
+		end
+	end
+end
+
+def hex_to_dec x
+	x = x.gsub(/#/,'').scan(/.{2}/).map do |hex| hex.to_i(10) end
+	x.push 255 if x.count == 3
+end
+
+private :hex_to_dec
+
+def txt2img(input, output=nil, options={})
+	# lambda functions
+
+	#
+	@options = {
+		chars_limit: false,
+		width: false,
+		height: false,
+		simulate: false,
+		quiet: true,
+		color_offset: '#00000000',
+		background: '#000000FF'
+	}.merge(options)
+
+	unless File.file? input
+	 	raise'given input file does not exists'
+	end
+
+	output = output.nil? ? input + '.png' : output
+	unless @options[:quiet]
+		puts "Input: #{input}"
+		puts "Output: #{output}"
+	end
+
+	chars = 0
+	limit = @options[:chars_limit]
+	File.open(input, 'r:UTF-8') do |f|
+		while f.getc
+			chars += 1
+			if limit.is_a? Integer and chars >= limit
+				break
+			end
+		end
+	end
+	chars += 2
+
+	# calculate size
+	if @options[:width] === false and @options[:height] === false
+		width, height = [Math.sqrt(chars).ceil] * 2
+	elsif @options[:width] === false
+		height = @options[:height]
+		width  = (chars.to_f/height.to_f).ceil
+	elsif @options[:height] === false
+		width  = @options[:width]
+		height = (chars.to_f/width.to_f).ceil
+	else
+		width, height = @options[:width], @options[:height]
+		if width * height < chars and !@options[:quiet]
+			puts "Specified size is too small, #{chars - (width * height)} characters will not fit"
+			answer = nil
+			until %w[n y].include? answer
+				print 'Continue? [Y/n] '
+				answer = gets.rstrip.downcase
+				if answer.empty?
+					answer = 'y'
+				end
+			end
+			if answer == 'n'
+				puts 'Aborted'
+				abort
+			end
+		end
+	end
+	unless @options[:quiet]
+		puts "Image size: #{width}×#{height}"
+	end
+
+	image = ChunkyPNG::Image.new width, height
+end
+
+# Command-line access
+if __FILE__ == $PROGRAM_NAME then
+	options = {
+		quiet: false
+	}
+	OptionParser.new do |o|
+		o.banner  = "Usage: #{$PROGRAM_NAME} <input> [<output>] [options...]\n\n"
+
+		o.on('-l=LIMIT', '--chars-limit=LIMIT', 'Determines count of processed characters', Integer) do |x|
+			options[:chars_limit] = x if x > 0
+		end
+
+		valid_hex = -> (x) {
+			unless (/^#?[a-f0-9]{6}([a-f0-9]{2})?$/i) =~ x
+				raise OptionParser::InvalidArgument.new 'given color don\'t looks like RGB(A) hex color'
+			end
+		}
+
+		o.on('-w=WIDTH', '--width=WIDTH', 'Determine width of image', Integer) do |x|
+			options[:width] = x if x > 0
+		end
+
+		o.on('-h=HEIGHT', '--height=HEIGHT', 'Determine height of image', Integer) do |x|
+			options[:height] = x if x > 0
+		end
+
+		o.on('-s', '--simulate', 'No file is created') do |x|
+			options[:simulate] = x
+		end
+
+		o.on('-q', '--quiet', 'Nothing will be printed') do |x|
+			options[:quiet] = x
+		end
+
+		o.on('-c', '--color-offset=HEX-COLOR', 'Determines the color being a NULL character; Accepts RGB(A) hex') do |x|
+			valid_hex.call x
+			options[:color_offset] = x
+		end
+
+		o.on('-b', '--background=HEX-COLOR', 'Determines color which will fill unused pixels; Accepts RGB(A) hex') do |x|
+			valid_hex.call x
+
+			p x.gsub(/#/,'').scan(/.{2}/).map do |hex| hex.to_i(10) end
+			# puts ChunkyPNG::Color.r(ChunkyPNG::Color.from_hex(x))
+
+			options[:background] = x
+		end
+
+		o.on('--help', 'Show this message') do
+			puts o
+			exit
+		end
+	end.parse!
+
+	input  = ARGV.pop || ''
+	output = ARGV.pop
+	txt2img input, output, options
+end
+
+=begin
 # windows fix
 $command = Gem.win_platform? ? 'magick convert' : 'convert'
+
+# arguments parsing
+args = {
+	chars: 0,
+	w: 0,
+	h: 0,
+	simulate: false,
+	offset: 0
+}
+flag = nil # mem about last found flag
+ARGV.select! do |arg|
+	if arg.start_with? '--'
+		flag = arg[2..-1].downcase
+		args[flag] = args.key?(flag) and [true, false].include? args[flag]
+
+		false
+	elsif not args.key? flag
+		flag = nil
+
+		false
+	elsif not flag.nil?
+		if args[flag].is_a? Integer
+			args[flag] = arg.to_i
+		end
+		if [true, false].include? args[flag]
+			args[flag] = ['true','on','y','t','yes'].include? arg.downcase
+		end
+
+		false
+	else
+		true
+	end
+end
+
+puts ARGV
+abort
 
 input, output = ARGV[0..1].push '', ''
 output = File.basename(input,'.*')+'.png' if output == ''
@@ -77,7 +265,7 @@ class DrawCollector
 
 		hex = rgba_to_hex r, g, b, 255 - a
 		@points.push "-draw \"fill #{hex} color #{x},#{y} point\""
-		self.release! if @points.count > @max
+		self.release! if @points.count > @max and @max > 0
 
 		self.print_progress!
 	end
@@ -97,7 +285,10 @@ class DrawCollector
 	end
 end
 
-collector = DrawCollector.new output
+collector = DrawCollector.new output, 256
 collector.read! input
 
 # 🦄 here's a little unicorn for testing purposes :3
+
+30 + 40 + 20 + 30 + 40 + 40 + 40 + 30 + 30 + 40
+=end
